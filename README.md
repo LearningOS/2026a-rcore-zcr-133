@@ -67,7 +67,9 @@ make build_docker
 make docker
 ```
 
-先从仓库的 Dockerfile 构建环境，再进入挂载了本地仓库的容器。容器内工作目录为 `/mnt`，可运行上面的 `make -C os run`。首次构建包含编译 QEMU，耗时较长。
+先从仓库的 Dockerfile 构建环境，再进入挂载了本地仓库的容器。容器内工作目录为 `/mnt`，可运行上面的 `make -C os run`。环境使用 QEMU 8.2.2 和 `nightly-2024-05-02`，首次构建会下载 QEMU 和 Rust 工具链。
+
+新版默认镜像名为 `rcore-docker-qemu8`，容器名为 `rcore-container-qemu8`，不会复用或删除旧的 QEMU 7 容器。旧容器内未放在挂载目录中的文件，请自行保留。
 
 网络配置参考 Docker 官方的[镜像下载代理](https://docs.docker.com/reference/cli/docker/image/pull/#proxy-configuration)和[构建代理](https://docs.docker.com/engine/cli/proxy/#build-with-a-proxy-configuration)。
 
