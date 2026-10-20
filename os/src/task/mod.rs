@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, VirtAddr};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -133,6 +134,35 @@ impl TaskManager {
         inner.tasks[cur].change_program_brk(size)
     }
 
+    fn inc_current_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        if let Some(slot) = inner.tasks[cur].syscall_count.get_mut(syscall_id) {
+            *slot += 1;
+        }
+    }
+
+    fn get_current_syscall_count(&self, syscall_id: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        let count = &inner.tasks[cur].syscall_count;
+        count.get(syscall_id).copied().unwrap_or(0) as usize
+    }
+
+    fn map_current_area(&self, start: VirtAddr, end: VirtAddr, perm: MapPermission) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur]
+            .memory_set
+            .map_framed_area(start, end, perm)
+    }
+
+    fn unmap_current_area(&self, start: VirtAddr, end: VirtAddr) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+        inner.tasks[cur].memory_set.unmap_range(start, end)
+    }
+
     /// Switch current `Running` task to the task we have found,
     /// or there is no `Ready` task and we can exit with all applications completed
     fn run_next_task(&self) {
@@ -201,4 +231,24 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// 计数加一，越界的 syscall 号直接忽略
+pub fn inc_current_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.inc_current_syscall_count(syscall_id);
+}
+
+/// 某个 syscall 在本任务里被调了几次
+pub fn current_syscall_count(syscall_id: usize) -> usize {
+    TASK_MANAGER.get_current_syscall_count(syscall_id)
+}
+
+/// 在当前任务里映射一段新区域，重叠时返回 false
+pub fn map_current_area(start: VirtAddr, end: VirtAddr, perm: MapPermission) -> bool {
+    TASK_MANAGER.map_current_area(start, end, perm)
+}
+
+/// 解除当前任务的一段映射，支持从区域中间挖
+pub fn unmap_current_area(start: VirtAddr, end: VirtAddr) -> bool {
+    TASK_MANAGER.unmap_current_area(start, end)
 }
