@@ -17,5 +17,7 @@ pub const APP_SIZE_LIMIT: usize = 0x20000;
 
 /// clock frequency
 pub const CLOCK_FREQ: usize = 12500000;
+/// 系统调用计数表的长度
+pub const MAX_SYSCALL_NUM: usize = 512;
 /// the physical memory end
 pub const MEMORY_END: usize = 0x88000000;

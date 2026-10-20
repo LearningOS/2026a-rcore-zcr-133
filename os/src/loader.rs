@@ -53,6 +53,12 @@ fn get_base_i(app_id: usize) -> usize {
     APP_BASE_ADDRESS + app_id * APP_SIZE_LIMIT
 }
 
+/// 第 app_id 个任务的用户栈区间
+pub fn get_user_stack_range(app_id: usize) -> (usize, usize) {
+    let top = USER_STACK[app_id].get_sp();
+    (top - USER_STACK_SIZE, top)
+}
+
 /// Get the total number of applications.
 pub fn get_num_app() -> usize {
     extern "C" {

@@ -14,7 +14,7 @@ mod switch;
 #[allow(clippy::module_inception)]
 mod task;
 
-use crate::config::MAX_APP_NUM;
+use crate::config::{MAX_APP_NUM, MAX_SYSCALL_NUM};
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
 use lazy_static::*;
@@ -47,6 +47,26 @@ pub struct TaskManagerInner {
     current_task: usize,
 }
 
+impl TaskManagerInner {
+    /// 给当前任务的 syscall 计数加一
+    fn inc_syscall_count(&mut self, syscall_id: usize) {
+        let current = self.current_task;
+        if let Some(count) = self.tasks[current].syscall_count.get_mut(syscall_id) {
+            *count += 1;
+        }
+    }
+
+    /// 当前任务调用某个 syscall 的次数
+    fn get_syscall_count(&self, syscall_id: usize) -> usize {
+        let current = self.current_task;
+        self.tasks[current]
+            .syscall_count
+            .get(syscall_id)
+            .copied()
+            .unwrap_or(0) as usize
+    }
+}
+
 lazy_static! {
     /// Global variable: TASK_MANAGER
     pub static ref TASK_MANAGER: TaskManager = {
@@ -54,6 +74,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            syscall_count: [0; MAX_SYSCALL_NUM],
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -135,6 +156,23 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// 给当前任务的 syscall 计数加一
+    fn inc_current_syscall_count(&self, syscall_id: usize) {
+        self.inner
+            .exclusive_access()
+            .inc_syscall_count(syscall_id);
+    }
+
+    /// 当前任务调用某个 syscall 的次数
+    fn get_current_syscall_count(&self, syscall_id: usize) -> usize {
+        self.inner.exclusive_access().get_syscall_count(syscall_id)
+    }
+
+    /// 当前运行任务的编号
+    fn current_task_id(&self) -> usize {
+        self.inner.exclusive_access().current_task
+    }
 }
 
 /// Run the first task in task list.
@@ -168,4 +206,19 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+/// 记一次系统调用，给当前任务的计数加一
+pub fn inc_current_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.inc_current_syscall_count(syscall_id);
+}
+
+/// 查当前任务调过几次某个系统调用
+pub fn get_current_syscall_count(syscall_id: usize) -> usize {
+    TASK_MANAGER.get_current_syscall_count(syscall_id)
+}
+
+/// 当前正在跑的任务编号
+pub fn current_task_id() -> usize {
+    TASK_MANAGER.current_task_id()
 }
