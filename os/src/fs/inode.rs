@@ -4,10 +4,11 @@
 //!
 //! `UPSafeCell<OSInodeInner>` -> `OSInode`: for static `ROOT_INODE`,we
 //! need to wrap `OSInodeInner` into `UPSafeCell`
-use super::File;
+use super::{File, Stat, StatMode};
 use crate::drivers::BLOCK_DEVICE;
 use crate::mm::UserBuffer;
 use crate::sync::UPSafeCell;
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::*;
@@ -101,6 +102,54 @@ impl OpenFlags {
     }
 }
 
+lazy_static! {
+    /// inode 号到硬链接数的映射，只在内存里维护
+    static ref N_LINK: UPSafeCell<BTreeMap<u32, u32>> =
+        unsafe { UPSafeCell::new(BTreeMap::new()) };
+}
+
+/// 取某个 inode 的硬链接数，没记录过就当 1
+pub fn nlink_of(inode_id: u32) -> u32 {
+    *N_LINK.exclusive_access().get(&inode_id).unwrap_or(&1)
+}
+
+fn set_nlink(inode_id: u32, nlink: u32) {
+    N_LINK.exclusive_access().insert(inode_id, nlink);
+}
+
+/// 给根目录下的 old_name 建一个硬链接 new_name
+pub fn root_linkat(old_name: &str, new_name: &str) -> isize {
+    if let Some(inode) = ROOT_INODE.find(old_name) {
+        let inode_id = inode.inode_id();
+        if ROOT_INODE.link(new_name, &inode) == 0 {
+            set_nlink(inode_id, nlink_of(inode_id) + 1);
+            0
+        } else {
+            -1
+        }
+    } else {
+        -1
+    }
+}
+
+/// 删掉根目录下名为 name 的目录项
+pub fn root_unlinkat(name: &str) -> isize {
+    if let Some(inode) = ROOT_INODE.find(name) {
+        let inode_id = inode.inode_id();
+        if ROOT_INODE.unlink(name) == 0 {
+            let nlink = nlink_of(inode_id);
+            if nlink > 1 {
+                set_nlink(inode_id, nlink - 1);
+            }
+            0
+        } else {
+            -1
+        }
+    } else {
+        -1
+    }
+}
+
 /// Open a file
 pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     let (readable, writable) = flags.read_write();
@@ -131,6 +180,21 @@ impl File for OSInode {
     }
     fn writable(&self) -> bool {
         self.writable
+    }
+    fn stat(&self) -> Stat {
+        let inner = self.inner.exclusive_access();
+        let inode_id = inner.inode.inode_id();
+        let mode = if inner.inode.is_dir() {
+            StatMode::DIR
+        } else {
+            StatMode::FILE
+        };
+        drop(inner);
+        let mut stat = Stat::empty();
+        stat.ino = inode_id as u64;
+        stat.mode = mode;
+        stat.nlink = nlink_of(inode_id);
+        stat
     }
     fn read(&self, mut buf: UserBuffer) -> usize {
         let mut inner = self.inner.exclusive_access();

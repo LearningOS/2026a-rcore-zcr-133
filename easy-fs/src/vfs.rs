@@ -155,6 +155,79 @@ impl Inode {
             v
         })
     }
+    /// the id of this inode on disk
+    pub fn inode_id(&self) -> u32 {
+        let fs = self.fs.lock();
+        fs.get_inode_id(self.block_id as u32, self.block_offset)
+    }
+    /// whether this inode is a directory
+    pub fn is_dir(&self) -> bool {
+        self.read_disk_inode(|disk_inode| disk_inode.is_dir())
+    }
+    /// add a directory entry `name` in this directory, pointing at `other`
+    pub fn link(&self, name: &str, other: &Arc<Inode>) -> isize {
+        let mut fs = self.fs.lock();
+        if self
+            .read_disk_inode(|disk_inode| self.find_inode_id(name, disk_inode))
+            .is_some()
+        {
+            return -1;
+        }
+        let inode_id = fs.get_inode_id(other.block_id as u32, other.block_offset);
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let new_size = (file_count + 1) * DIRENT_SZ;
+            self.increase_size(new_size as u32, root_inode, &mut fs);
+            let dirent = DirEntry::new(name, inode_id);
+            root_inode.write_at(file_count * DIRENT_SZ, dirent.as_bytes(), &self.block_device);
+        });
+        block_cache_sync_all();
+        0
+    }
+    /// remove the directory entry `name` from this directory
+    pub fn unlink(&self, name: &str) -> isize {
+        let mut fs = self.fs.lock();
+        let index = self.read_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            let mut target = None;
+            let mut dirent = DirEntry::empty();
+            for i in 0..file_count {
+                assert_eq!(
+                    root_inode.read_at(i * DIRENT_SZ, dirent.as_bytes_mut(), &self.block_device,),
+                    DIRENT_SZ,
+                );
+                if dirent.name() == name {
+                    target = Some(i);
+                    break;
+                }
+            }
+            target
+        });
+        let index = match index {
+            Some(index) => index,
+            None => return -1,
+        };
+        self.modify_disk_inode(|root_inode| {
+            let file_count = (root_inode.size as usize) / DIRENT_SZ;
+            // 把最后一个目录项搬到空出来的位置，再把目录缩短一项
+            if index != file_count - 1 {
+                let mut last = DirEntry::empty();
+                assert_eq!(
+                    root_inode.read_at(
+                        (file_count - 1) * DIRENT_SZ,
+                        last.as_bytes_mut(),
+                        &self.block_device,
+                    ),
+                    DIRENT_SZ,
+                );
+                root_inode.write_at(index * DIRENT_SZ, last.as_bytes(), &self.block_device);
+            }
+            root_inode.size -= DIRENT_SZ as u32;
+        });
+        let _ = &mut fs;
+        block_cache_sync_all();
+        0
+    }
     /// Read data from current inode
     pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> usize {
         let _fs = self.fs.lock();

@@ -318,6 +318,72 @@ impl MemorySet {
             false
         }
     }
+
+    /// 新映射一段区域，与已有区域重叠时返回 false
+    pub fn map_framed_area(
+        &mut self,
+        start: VirtAddr,
+        end: VirtAddr,
+        permission: MapPermission,
+    ) -> bool {
+        let (start_vpn, end_vpn) = (start.floor(), end.ceil());
+        let overlapped = self.areas.iter().any(|area| {
+            let (area_start, area_end) = (area.vpn_range.get_start(), area.vpn_range.get_end());
+            area_start != area_end && area_start < end_vpn && start_vpn < area_end
+        });
+        if overlapped {
+            return false;
+        }
+        self.insert_framed_area(start, end, permission);
+        true
+    }
+
+    /// 解除 [start, end) 的映射，可以从区域中间挖掉一段
+    pub fn unmap_range(&mut self, start: VirtAddr, end: VirtAddr) -> bool {
+        let (start_vpn, end_vpn) = (start.floor(), end.ceil());
+        if start_vpn >= end_vpn {
+            return false;
+        }
+        let index = self.areas.iter().position(|area| {
+            area.map_type == MapType::Framed
+                && area.vpn_range.get_start() <= start_vpn
+                && end_vpn <= area.vpn_range.get_end()
+        });
+        let index = match index {
+            Some(index) => index,
+            None => return false,
+        };
+        {
+            let (areas, page_table) = (&mut self.areas, &mut self.page_table);
+            for vpn in VPNRange::new(start_vpn, end_vpn) {
+                areas[index].unmap_one(page_table, vpn);
+            }
+        }
+        let (area_start, area_end) = (
+            self.areas[index].vpn_range.get_start(),
+            self.areas[index].vpn_range.get_end(),
+        );
+        if start_vpn == area_start && end_vpn == area_end {
+            self.areas.remove(index);
+        } else if start_vpn == area_start {
+            self.areas[index].vpn_range = VPNRange::new(end_vpn, area_end);
+        } else if end_vpn == area_end {
+            self.areas[index].vpn_range = VPNRange::new(area_start, start_vpn);
+        } else {
+            // 挖掉中间一段，拆成前后两个区域
+            let map_type = self.areas[index].map_type;
+            let map_perm = self.areas[index].map_perm;
+            let tail_frames = self.areas[index].data_frames.split_off(&end_vpn);
+            self.areas[index].vpn_range = VPNRange::new(area_start, start_vpn);
+            self.areas.push(MapArea {
+                vpn_range: VPNRange::new(end_vpn, area_end),
+                data_frames: tail_frames,
+                map_type,
+                map_perm,
+            });
+        }
+        true
+    }
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
